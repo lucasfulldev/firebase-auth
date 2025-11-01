@@ -227,6 +227,9 @@ app.get('/', (req, res) => {
       'GET /api/esp32/dados': 'Ler últimos dados',
       'POST /api/esp32/acessos': 'Registrar acesso (RFID)',
       'GET /api/esp32/acessos': 'Ler últimos 10 acessos',
+      'POST /api/esp32/telegram/ask': 'Pedir confirmação Telegram',
+      'POST /api/esp32/telegram/check': 'Verificar resposta Telegram',
+      'POST /api/esp32/telegram/respond': 'Registrar resposta Telegram',
       'GET /health': 'Status do servidor',
       'GET /': 'Informações da API'
     },
@@ -236,6 +239,155 @@ app.get('/', (req, res) => {
       database: process.env.FIREBASE_DATABASE_URL ? '✓ conectado' : '✗ não configurado'
     }
   });
+});
+
+// ============================================================
+// ROTAS PARA TELEGRAM - CONFIRMAÇÃO DE CADASTRO
+// ============================================================
+
+/**
+ * POST /api/esp32/telegram/ask
+ * Recebe requisição do ESP32 para pedir confirmação no Telegram
+ */
+app.post('/api/esp32/telegram/ask', async (req, res) => {
+  try {
+    const { cardUID, action } = req.body;
+
+    if (!cardUID) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltam campos: cardUID'
+      });
+    }
+
+    // Gerar ID único para esta requisição
+    const registrationId = `${cardUID}_${Date.now()}`;
+
+    // Armazenar no Firebase para rastreamento
+    await db.ref(`registrations/${registrationId}`).set({
+      cardUID: cardUID,
+      status: 'pending',
+      timestamp: admin.database.ServerValue.TIMESTAMP,
+      expiresAt: admin.database.ServerValue.TIMESTAMP
+    });
+
+    console.log(`✓ Requisição de cadastro criada: ${registrationId}`);
+
+    res.json({
+      success: true,
+      registrationId: registrationId,
+      message: 'Confirmação enviada para Telegram'
+    });
+
+  } catch (error) {
+    console.error('✗ Erro ao criar requisição:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/esp32/telegram/check
+ * Verifica se o usuário confirmou ou cancelou no Telegram
+ */
+app.post('/api/esp32/telegram/check', async (req, res) => {
+  try {
+    const { registrationId } = req.body;
+
+    if (!registrationId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltam campos: registrationId'
+      });
+    }
+
+    // Buscar status da requisição
+    const snapshot = await db.ref(`registrations/${registrationId}`).once('value');
+    const registration = snapshot.val();
+
+    if (!registration) {
+      return res.json({
+        status: 'not_found',
+        message: 'Requisição não encontrada'
+      });
+    }
+
+    // Verificar se já foi respondida
+    if (registration.status === 'confirmed') {
+      const confirmed = registration.response === '1';
+
+      res.json({
+        status: 'confirmed',
+        confirmed: confirmed,
+        message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
+      });
+
+      // Limpar registro após resposta
+      setTimeout(() => {
+        db.ref(`registrations/${registrationId}`).remove();
+      }, 5000);
+    } else {
+      res.json({
+        status: 'waiting',
+        message: 'Aguardando resposta do Telegram'
+      });
+    }
+
+  } catch (error) {
+    console.error('✗ Erro ao verificar requisição:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/esp32/telegram/respond
+ * Endpoint para o bot Telegram responder (1 para confirmar, 0 para cancelar)
+ */
+app.post('/api/esp32/telegram/respond', async (req, res) => {
+  try {
+    const { registrationId, response } = req.body;
+
+    if (!registrationId || !response) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltam campos: registrationId, response'
+      });
+    }
+
+    // Validar resposta
+    if (response !== '1' && response !== '0') {
+      return res.status(400).json({
+        success: false,
+        error: 'Resposta deve ser "1" ou "0"'
+      });
+    }
+
+    // Atualizar status da requisição
+    await db.ref(`registrations/${registrationId}`).update({
+      status: 'confirmed',
+      response: response,
+      respondedAt: admin.database.ServerValue.TIMESTAMP
+    });
+
+    console.log(`✓ Resposta Telegram recebida: ${registrationId} = ${response}`);
+
+    res.json({
+      success: true,
+      message: 'Resposta registrada com sucesso'
+    });
+
+  } catch (error) {
+    console.error('✗ Erro ao registrar resposta:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 module.exports = app;
