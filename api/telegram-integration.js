@@ -26,19 +26,12 @@ class TelegramBot {
 
   /**
    * Envia mensagem ao Telegram solicitando confirmação de cadastro
-   * Guarda o update_id (offset) para saber quais são mensagens NOVAS depois disto
+   * Guarda o timestamp para validar que a resposta veio DEPOIS do pedido
    */
   async askConfirmation(registrationId, cardUID) {
     try {
-      // 1. Pegar o último update_id antes de enviar a mensagem
-      const initialUpdates = await axios.get(`${this.baseUrl}/getUpdates`);
-      const messages = initialUpdates.data.result || [];
-      let lastUpdateId = 0;
-
-      if (messages.length > 0) {
-        // Pegar o update_id da última mensagem
-        lastUpdateId = messages[messages.length - 1].update_id;
-      }
+      // 1. Registrar o momento exato que estamos enviando a mensagem
+      const messageTimestamp = Date.now();
 
       // 2. Enviar mensagem de confirmação
       const message = `
@@ -60,13 +53,13 @@ Responda:
         parse_mode: 'Markdown'
       });
 
-      // 3. Armazenar no Firebase: offset da próxima mensagem esperada
+      // 3. Armazenar no Firebase: timestamp quando a mensagem foi enviada
       if (this.db) {
         await this.db.ref(`registrations/${registrationId}`).update({
-          telegramOffset: lastUpdateId,
-          messageTimestamp: Date.now()
+          messageTimestamp: messageTimestamp,
+          messageStatus: 'awaiting_response'
         });
-        console.log(`✓ Offset armazenado: ${lastUpdateId} para ${cardUID}`);
+        console.log(`✓ Mensagem enviada às ${new Date(messageTimestamp).toLocaleString('pt-BR')} para ${cardUID}`);
       }
 
       console.log(`✓ Mensagem Telegram enviada para ${cardUID} (ID: ${registrationId})`);
@@ -80,7 +73,7 @@ Responda:
 
   /**
    * Verifica a resposta do Telegram
-   * Busca TODAS as mensagens desde a requisição e procura pela resposta do usuário
+   * Procura por respostas que chegaram DEPOIS da mensagem de pedido de confirmação
    */
   async checkResponse(registrationId) {
     try {
@@ -110,73 +103,57 @@ Responda:
           };
         }
 
-        // Se ainda aguarda, procurar mensagens no Telegram desde aquele offset
-        const telegramOffset = registration.telegramOffset || 0;
+        // Se ainda aguarda, procurar mensagens no Telegram
+        const messageTimestamp = registration.messageTimestamp || Date.now();
 
         try {
-          // Buscar mensagens a partir do offset armazenado
-          // offset: N significa "retorna updates com ID >= N"
-          // Depois procuramos pela resposta entre TODAS as mensagens
+          // Buscar TODAS as mensagens recentes
           const updates = await axios.get(`${this.baseUrl}/getUpdates`, {
             params: {
-              offset: telegramOffset + 1, // Começa após a última mensagem armazenada
-              limit: 100 // Pegar até 100 mensagens (padrão Telegram)
+              limit: 100 // Pegar até 100 mensagens mais recentes
             }
           });
 
           const messages = updates.data.result || [];
 
           console.log(`🔍 Procurando resposta para ${registrationId}: ${messages.length} mensagens encontradas`);
+          console.log(`📅 Validando mensagens depois de: ${new Date(messageTimestamp).toLocaleString('pt-BR')}`);
 
-          // Procurar por respostas com "1" ou "0" nas mensagens retornadas
+          // Procurar por respostas com "1" ou "0" nas mensagens
+          // MAS SÓ as que chegaram DEPOIS de messageTimestamp
           for (const update of messages) {
-            if (update.message && update.message.text) {
-              const text = update.message.text.trim();
+            if (update.message && update.message.text && update.message.date) {
+              // update.message.date vem em formato UNIX timestamp (segundos)
+              const messageDate = update.message.date * 1000; // Converter para milissegundos
 
-              if (text === '1' || text === '0') {
-                console.log(`✓ Resposta encontrada: ${text} para ${registrationId}`);
+              // Só processar mensagens que chegaram DEPOIS da requisição
+              if (messageDate > messageTimestamp) {
+                const text = update.message.text.trim();
 
-                const confirmed = text === '1';
+                if (text === '1' || text === '0') {
+                  console.log(`✓ Resposta válida encontrada: "${text}" às ${new Date(messageDate).toLocaleString('pt-BR')}`);
 
-                // IMPORTANTE: Fazer acknowledge da mensagem no Telegram
-                // Isso marca como "lida" e impede que seja retornada novamente
-                try {
-                  await axios.get(`${this.baseUrl}/getUpdates`, {
-                    params: {
-                      offset: update.update_id + 1 // Marca todas as mensagens como processadas
-                    }
-                  });
-                  console.log(`✓ Mensagem reconhecida no Telegram: ${update.update_id}`);
-                } catch (err) {
-                  console.warn('⚠️ Erro ao reconhecer mensagem no Telegram:', err.message);
+                  const confirmed = text === '1';
+
+                  return {
+                    status: 'confirmed',
+                    confirmed: confirmed,
+                    cardUID: registration.cardUID,
+                    message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado',
+                    responseTime: messageDate
+                  };
                 }
-
-                return {
-                  status: 'confirmed',
-                  confirmed: confirmed,
-                  cardUID: registration.cardUID,
-                  message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
-                };
+              } else {
+                console.log(`⏭️ Ignorando mensagem antiga: ${text} (${new Date(messageDate).toLocaleString('pt-BR')})`);
               }
             }
-          }
-
-          // Nenhuma resposta ainda - atualizar offset para não processar mensagens antigas novamente
-          if (messages.length > 0) {
-            const lastUpdateId = messages[messages.length - 1].update_id;
-
-            // Atualizar offset no Firebase para próximas consultas
-            await this.db.ref(`registrations/${registrationId}`).update({
-              telegramOffset: lastUpdateId
-            });
-
-            console.log(`📍 Offset atualizado para ${registrationId}: ${lastUpdateId}`);
           }
 
           return {
             status: 'waiting',
             message: 'Aguardando resposta',
-            messagesChecked: messages.length
+            messagesChecked: messages.length,
+            validAfter: new Date(messageTimestamp).toLocaleString('pt-BR')
           };
 
         } catch (telegramError) {
