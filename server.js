@@ -14,11 +14,38 @@ app.use(cors());
 app.use(express.json());
 
 // Inicializar Firebase Admin SDK
-const serviceAccount = require('./serviceAccountKey.json');
+let serviceAccount;
+
+// Tentar carregar de arquivo local (desenvolvimento) ou variáveis de ambiente (produção)
+if (process.env.FIREBASE_PROJECT_ID) {
+  // Modo produção (Vercel/variáveis de ambiente)
+  serviceAccount = {
+    type: process.env.FIREBASE_TYPE || 'service_account',
+    project_id: process.env.FIREBASE_PROJECT_ID,
+    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    client_email: process.env.FIREBASE_CLIENT_EMAIL,
+    client_id: process.env.FIREBASE_CLIENT_ID,
+    auth_uri: process.env.FIREBASE_AUTH_URI,
+    token_uri: process.env.FIREBASE_TOKEN_URI,
+    auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_CERT_URL,
+    client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL
+  };
+} else {
+  // Modo desenvolvimento (arquivo local)
+  try {
+    serviceAccount = require('./serviceAccountKey.json');
+  } catch (error) {
+    console.error('❌ Erro: Arquivo serviceAccountKey.json não encontrado e variáveis de ambiente não configuradas');
+    console.error('Para desenvolvimento: Coloque serviceAccountKey.json na raiz do projeto');
+    console.error('Para produção (Vercel): Configure as variáveis de ambiente');
+    process.exit(1);
+  }
+}
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://controle-de-acesso-tel-rfid2-default-rtdb.asia-southeast1.firebasedatabase.app"
+  databaseURL: process.env.FIREBASE_DATABASE_URL || "https://controle-de-acesso-tel-rfid2-default-rtdb.asia-southeast1.firebasedatabase.app"
 });
 
 const db = admin.database();
