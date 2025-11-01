@@ -8,6 +8,10 @@
  * 4. Definir as variáveis de ambiente:
  *    - TELEGRAM_BOT_TOKEN
  *    - TELEGRAM_CHAT_ID
+ *
+ * IMPORTANTE: Este sistema trabalha com Firebase Realtime Database para
+ * manter sincronização em ambiente serverless (Vercel). Cada requisição
+ * é uma instância diferente, então não podemos guardar em memória!
  */
 
 const axios = require('axios');
@@ -17,15 +21,26 @@ class TelegramBot {
     this.botToken = botToken;
     this.chatId = chatId;
     this.baseUrl = `https://api.telegram.org/bot${botToken}`;
-    this.db = firebaseDb; // Firebase database instance (opcional)
+    this.db = firebaseDb; // Firebase database instance
   }
 
   /**
    * Envia mensagem ao Telegram solicitando confirmação de cadastro
-   * O registro é armazenado no Firebase para persistência entre requisições
+   * Guarda o update_id (offset) para saber quais são mensagens NOVAS depois disto
    */
   async askConfirmation(registrationId, cardUID) {
     try {
+      // 1. Pegar o último update_id antes de enviar a mensagem
+      const initialUpdates = await axios.get(`${this.baseUrl}/getUpdates`);
+      const messages = initialUpdates.data.result || [];
+      let lastUpdateId = 0;
+
+      if (messages.length > 0) {
+        // Pegar o update_id da última mensagem
+        lastUpdateId = messages[messages.length - 1].update_id;
+      }
+
+      // 2. Enviar mensagem de confirmação
       const message = `
 🔐 *Novo Cartão RFID Detectado*
 
@@ -45,6 +60,15 @@ Responda:
         parse_mode: 'Markdown'
       });
 
+      // 3. Armazenar no Firebase: offset da próxima mensagem esperada
+      if (this.db) {
+        await this.db.ref(`registrations/${registrationId}`).update({
+          telegramOffset: lastUpdateId,
+          messageTimestamp: Date.now()
+        });
+        console.log(`✓ Offset armazenado: ${lastUpdateId} para ${cardUID}`);
+      }
+
       console.log(`✓ Mensagem Telegram enviada para ${cardUID} (ID: ${registrationId})`);
       return registrationId;
 
@@ -56,32 +80,89 @@ Responda:
 
   /**
    * Verifica a resposta do Telegram
-   * Consulta o Firebase para obter status da resposta
+   * Só procura por mensagens NOVAS depois que o cartão foi registrado
    */
   async checkResponse(registrationId) {
     try {
+      // Se Firebase estiver disponível, usar como fonte de verdade
+      if (this.db) {
+        const snapshot = await this.db.ref(`registrations/${registrationId}`).once('value');
+        const registration = snapshot.val();
 
-      // Fallback: buscar diretamente do Telegram (menos confiável em serverless)
-      const updates = await axios.get(`${this.baseUrl}/getUpdates`);
-      const messages = updates.data.result || [];
+        if (!registration) {
+          return { status: 'not_found', message: 'Registro não encontrado' };
+        }
 
-      // Procurar por respostas com "1" ou "0"
-      for (const update of messages) {
-        if (update.message && update.message.text) {
-          const text = update.message.text.trim();
+        // Verificar timeout (5 minutos)
+        const timeout = 5 * 60 * 1000;
+        if (registration.timestamp && Date.now() - registration.timestamp > timeout) {
+          return { status: 'timeout', message: 'Tempo de resposta expirado' };
+        }
 
-          if (text === '1' || text === '0') {
-            const confirmed = text === '1';
-            return {
-              status: 'confirmed',
-              confirmed: confirmed,
-              message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
-            };
+        // Se já foi respondido no Firebase, retornar
+        if (registration.status === 'confirmed' && registration.response) {
+          const confirmed = registration.response === '1';
+          return {
+            status: 'confirmed',
+            confirmed: confirmed,
+            cardUID: registration.cardUID,
+            message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
+          };
+        }
+
+        // Se ainda aguarda, procurar mensagens NOVAS no Telegram
+        // usando o offset guardado
+        const offset = registration.telegramOffset || 0;
+
+        try {
+          // Buscar APENAS mensagens DEPOIS do offset armazenado
+          const updates = await axios.get(`${this.baseUrl}/getUpdates`, {
+            params: {
+              offset: offset + 1, // +1 para começar DEPOIS do offset armazenado
+              limit: 1 // Pegar só a mensagem mais recente
+            }
+          });
+
+          const messages = updates.data.result || [];
+
+          // Procurar por respostas com "1" ou "0" nas NOVAS mensagens
+          for (const update of messages) {
+            if (update.message && update.message.text) {
+              const text = update.message.text.trim();
+
+              if (text === '1' || text === '0') {
+                console.log(`✓ Resposta encontrada: ${text} para ${registrationId}`);
+
+                const confirmed = text === '1';
+                return {
+                  status: 'confirmed',
+                  confirmed: confirmed,
+                  cardUID: registration.cardUID,
+                  message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
+                };
+              }
+            }
           }
+
+          // Nenhuma resposta ainda
+          return {
+            status: 'waiting',
+            message: 'Aguardando resposta',
+            offset: offset,
+            newMessagesFound: messages.length
+          };
+
+        } catch (telegramError) {
+          console.error('⚠️ Erro ao consultar Telegram:', telegramError.message);
+          return { status: 'waiting', message: 'Aguardando resposta (erro ao consultar Telegram)' };
         }
       }
 
-      return { status: 'waiting', message: 'Aguardando resposta' };
+      // Fallback sem Firebase: não implementar lógica ambígua
+      return {
+        status: 'waiting',
+        message: 'Sistema de validação não disponível (Firebase não configurado)'
+      };
 
     } catch (error) {
       console.error('✗ Erro ao verificar resposta:', error.message);
@@ -114,7 +195,6 @@ ${message ? `*Info:* ${message}` : ''}
       console.error('✗ Erro ao enviar notificação:', error.message);
     }
   }
-
 }
 
 module.exports = TelegramBot;
