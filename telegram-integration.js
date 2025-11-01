@@ -108,6 +108,8 @@ Responda:
         }
       }
 
+      console.log('updates', updates)
+
       return { status: 'waiting', message: 'Aguardando resposta' };
 
     } catch (error) {
