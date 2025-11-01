@@ -61,34 +61,34 @@ Responda:
   async checkResponse(registrationId) {
     try {
       // Se Firebase estiver disponível, consultar status lá
-      if (this.db) {
-        const snapshot = await this.db.ref(`registrations/${registrationId}`).once('value');
-        const registration = snapshot.val();
+      // if (this.db) {
+      //   const snapshot = await this.db.ref(`registrations/${registrationId}`).once('value');
+      //   const registration = snapshot.val();
 
-        if (!registration) {
-          return { status: 'not_found', message: 'Registro não encontrado' };
-        }
+      //   if (!registration) {
+      //     return { status: 'not_found', message: 'Registro não encontrado' };
+      //   }
 
-        // Verificar timeout (5 minutos)
-        const timeout = 5 * 60 * 1000;
-        if (Date.now() - registration.timestamp > timeout) {
-          return { status: 'timeout', message: 'Tempo de resposta expirado' };
-        }
+      //   // Verificar timeout (5 minutos)
+      //   const timeout = 5 * 60 * 1000;
+      //   if (Date.now() - registration.timestamp > timeout) {
+      //     return { status: 'timeout', message: 'Tempo de resposta expirado' };
+      //   }
 
-        // Se já foi respondido
-        if (registration.status === 'confirmed' && registration.response) {
-          const confirmed = registration.response === '1';
-          return {
-            status: 'confirmed',
-            confirmed: confirmed,
-            cardUID: registration.cardUID,
-            message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
-          };
-        }
+      //   // Se já foi respondido
+      //   if (registration.status === 'confirmed' && registration.response) {
+      //     const confirmed = registration.response === '1';
+      //     return {
+      //       status: 'confirmed',
+      //       confirmed: confirmed,
+      //       cardUID: registration.cardUID,
+      //       message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
+      //     };
+      //   }
 
-        // Ainda aguardando
-        return { status: 'waiting', message: 'Aguardando resposta', registrationId: registrationId};
-      }
+      //   // Ainda aguardando
+      //   return { status: 'waiting', message: 'Aguardando resposta', registrationId: registrationId};
+      // }
 
       // Fallback: buscar diretamente do Telegram (menos confiável em serverless)
       const updates = await axios.get(`${this.baseUrl}/getUpdates`);
