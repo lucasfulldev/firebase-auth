@@ -80,7 +80,7 @@ Responda:
 
   /**
    * Verifica a resposta do Telegram
-   * Só procura por mensagens NOVAS depois que o cartão foi registrado
+   * Busca TODAS as mensagens desde a requisição e procura pela resposta do usuário
    */
   async checkResponse(registrationId) {
     try {
@@ -110,22 +110,25 @@ Responda:
           };
         }
 
-        // Se ainda aguarda, procurar mensagens NOVAS no Telegram
-        // usando o offset guardado
-        const offset = registration.telegramOffset || 0;
+        // Se ainda aguarda, procurar mensagens no Telegram desde aquele offset
+        const telegramOffset = registration.telegramOffset || 0;
 
         try {
-          // Buscar APENAS mensagens DEPOIS do offset armazenado
+          // Buscar mensagens a partir do offset armazenado
+          // offset: N significa "retorna updates com ID >= N"
+          // Depois procuramos pela resposta entre TODAS as mensagens
           const updates = await axios.get(`${this.baseUrl}/getUpdates`, {
             params: {
-              offset: offset + 1, // +1 para começar DEPOIS do offset armazenado
-              limit: 1 // Pegar só a mensagem mais recente
+              offset: telegramOffset + 1, // Começa após a última mensagem armazenada
+              limit: 100 // Pegar até 100 mensagens (padrão Telegram)
             }
           });
 
           const messages = updates.data.result || [];
 
-          // Procurar por respostas com "1" ou "0" nas NOVAS mensagens
+          console.log(`🔍 Procurando resposta para ${registrationId}: ${messages.length} mensagens encontradas`);
+
+          // Procurar por respostas com "1" ou "0" nas mensagens retornadas
           for (const update of messages) {
             if (update.message && update.message.text) {
               const text = update.message.text.trim();
@@ -134,6 +137,20 @@ Responda:
                 console.log(`✓ Resposta encontrada: ${text} para ${registrationId}`);
 
                 const confirmed = text === '1';
+
+                // IMPORTANTE: Fazer acknowledge da mensagem no Telegram
+                // Isso marca como "lida" e impede que seja retornada novamente
+                try {
+                  await axios.get(`${this.baseUrl}/getUpdates`, {
+                    params: {
+                      offset: update.update_id + 1 // Marca todas as mensagens como processadas
+                    }
+                  });
+                  console.log(`✓ Mensagem reconhecida no Telegram: ${update.update_id}`);
+                } catch (err) {
+                  console.warn('⚠️ Erro ao reconhecer mensagem no Telegram:', err.message);
+                }
+
                 return {
                   status: 'confirmed',
                   confirmed: confirmed,
@@ -144,12 +161,22 @@ Responda:
             }
           }
 
-          // Nenhuma resposta ainda
+          // Nenhuma resposta ainda - atualizar offset para não processar mensagens antigas novamente
+          if (messages.length > 0) {
+            const lastUpdateId = messages[messages.length - 1].update_id;
+
+            // Atualizar offset no Firebase para próximas consultas
+            await this.db.ref(`registrations/${registrationId}`).update({
+              telegramOffset: lastUpdateId
+            });
+
+            console.log(`📍 Offset atualizado para ${registrationId}: ${lastUpdateId}`);
+          }
+
           return {
             status: 'waiting',
             message: 'Aguardando resposta',
-            offset: offset,
-            newMessagesFound: messages.length
+            messagesChecked: messages.length
           };
 
         } catch (telegramError) {
