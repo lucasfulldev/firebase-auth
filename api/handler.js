@@ -56,8 +56,8 @@ const db = admin.database();
 // Inicializar Telegram Bot se credenciais estiverem configuradas
 let telegramBot = null;
 if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
-  telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID);
-  console.log('✓ Telegram Bot inicializado');
+  telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, db);
+  console.log('✓ Telegram Bot inicializado com Firebase');
 } else {
   console.warn('⚠️ Telegram Bot não configurado (faltam credenciais)');
 }

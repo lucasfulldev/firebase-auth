@@ -13,21 +13,19 @@
 const axios = require('axios');
 
 class TelegramBot {
-  constructor(botToken, chatId) {
+  constructor(botToken, chatId, firebaseDb = null) {
     this.botToken = botToken;
     this.chatId = chatId;
     this.baseUrl = `https://api.telegram.org/bot${botToken}`;
-    this.pendingRegistrations = new Map(); // Armazena cartões pendentes
+    this.db = firebaseDb; // Firebase database instance (opcional)
   }
 
   /**
    * Envia mensagem ao Telegram solicitando confirmação de cadastro
-   * Retorna um ID para rastrear a requisição
+   * O registro é armazenado no Firebase para persistência entre requisições
    */
-  async askConfirmation(cardId, cardUID) {
+  async askConfirmation(registrationId, cardUID) {
     try {
-      const registrationId = `${cardId}_${Date.now()}`;
-
       const message = `
 🔐 *Novo Cartão RFID Detectado*
 
@@ -41,21 +39,13 @@ Responda:
 • *0* para cancelar
       `.trim();
 
-      const response = await axios.post(`${this.baseUrl}/sendMessage`, {
+      await axios.post(`${this.baseUrl}/sendMessage`, {
         chat_id: this.chatId,
         text: message,
         parse_mode: 'Markdown'
       });
 
-      // Armazena a requisição pendente
-      this.pendingRegistrations.set(registrationId, {
-        cardId,
-        cardUID,
-        timestamp: Date.now(),
-        messageId: response.data.result.message_id
-      });
-
-      console.log(`✓ Mensagem Telegram enviada para ${cardUID}`);
+      console.log(`✓ Mensagem Telegram enviada para ${cardUID} (ID: ${registrationId})`);
       return registrationId;
 
     } catch (error) {
@@ -66,25 +56,43 @@ Responda:
 
   /**
    * Verifica a resposta do Telegram
+   * Consulta o Firebase para obter status da resposta
    */
   async checkResponse(registrationId) {
     try {
-      const registration = this.pendingRegistrations.get(registrationId);
+      // Se Firebase estiver disponível, consultar status lá
+      if (this.db) {
+        const snapshot = await this.db.ref(`registrations/${registrationId}`).once('value');
+        const registration = snapshot.val();
 
-      if (!registration) {
-        return { status: 'not_found', message: 'Registro não encontrado' };
+        if (!registration) {
+          return { status: 'not_found', message: 'Registro não encontrado' };
+        }
+
+        // Verificar timeout (5 minutos)
+        const timeout = 5 * 60 * 1000;
+        if (Date.now() - registration.timestamp > timeout) {
+          return { status: 'timeout', message: 'Tempo de resposta expirado' };
+        }
+
+        // Se já foi respondido
+        if (registration.status === 'confirmed' && registration.response) {
+          const confirmed = registration.response === '1';
+          return {
+            status: 'confirmed',
+            confirmed: confirmed,
+            cardUID: registration.cardUID,
+            message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
+          };
+        }
+
+        // Ainda aguardando
+        return { status: 'waiting', message: 'Aguardando resposta' };
       }
 
-      // Verificar timeout (5 minutos)
-      const timeout = 5 * 60 * 1000;
-      if (Date.now() - registration.timestamp > timeout) {
-        this.pendingRegistrations.delete(registrationId);
-        return { status: 'timeout', message: 'Tempo de resposta expirado' };
-      }
-
-      // Buscar mensagens recentes
+      // Fallback: buscar diretamente do Telegram (menos confiável em serverless)
       const updates = await axios.get(`${this.baseUrl}/getUpdates`);
-      const messages = updates.data.result;
+      const messages = updates.data.result || [];
 
       // Procurar por respostas com "1" ou "0"
       for (const update of messages) {
@@ -92,16 +100,10 @@ Responda:
           const text = update.message.text.trim();
 
           if (text === '1' || text === '0') {
-            // Encontrou resposta
             const confirmed = text === '1';
-
-            // Remover registro
-            this.pendingRegistrations.delete(registrationId);
-
             return {
               status: 'confirmed',
               confirmed: confirmed,
-              cardUID: registration.cardUID,
               message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
             };
           }
@@ -142,20 +144,6 @@ ${message ? `*Info:* ${message}` : ''}
     }
   }
 
-  /**
-   * Limpar registros antigos (timeout)
-   */
-  cleanupOldRegistrations() {
-    const timeout = 5 * 60 * 1000;
-    const now = Date.now();
-
-    for (const [key, value] of this.pendingRegistrations.entries()) {
-      if (now - value.timestamp > timeout) {
-        this.pendingRegistrations.delete(key);
-        console.log(`🗑️ Limpeza: Registro ${key} removido por timeout`);
-      }
-    }
-  }
 }
 
 module.exports = TelegramBot;
