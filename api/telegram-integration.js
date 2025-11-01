@@ -87,7 +87,7 @@ Responda:
         }
 
         // Ainda aguardando
-        return { status: 'waiting', message: 'Aguardando resposta' };
+        return { status: 'waiting', message: 'Aguardando resposta', registrationId: registrationId};
       }
 
       // Fallback: buscar diretamente do Telegram (menos confiável em serverless)
@@ -110,7 +110,7 @@ Responda:
         }
       }
 
-      return { status: 'waiting', message: 'Aguardando resposta' };
+      return { status: 'waiting', message: 'Aguardando resposta', updates:updates };
 
     } catch (error) {
       console.error('✗ Erro ao verificar resposta:', error.message);
