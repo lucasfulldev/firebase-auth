@@ -49,6 +49,10 @@ bool isEnrollmentMode = false;
 unsigned long previousMillisBlink = 0;
 const long blinkInterval = 250;  // Pisca a cada 250ms
 
+// Variáveis para controle de leitura de cartão
+unsigned long lastCardReadTime = 0;
+const long CARD_READ_COOLDOWN = 1500;  // Esperar 1,5 segundos antes de ler novo cartão
+
 // Variáveis para Telegram
 String pendingCardUID = "";  // Cartão pendente de confirmação
 String registrationId = "";  // ID da requisição no servidor
@@ -329,33 +333,48 @@ void sendAccessToServer(String cardID, String acao, String usuario) {
     return;
   }
 
-  HTTPClient http;
+  const int MAX_RETRIES = 3;
+  int retryCount = 0;
+  bool success = false;
 
-  StaticJsonDocument<256> jsonDoc;
-  jsonDoc["cardId"] = cardID;
-  jsonDoc["acao"] = acao;
-  jsonDoc["usuario"] = usuario;
+  while (retryCount < MAX_RETRIES && !success) {
+    HTTPClient http;
 
-  String jsonString;
-  serializeJson(jsonDoc, jsonString);
+    StaticJsonDocument<256> jsonDoc;
+    jsonDoc["cardId"] = cardID;
+    jsonDoc["acao"] = acao;
+    jsonDoc["usuario"] = usuario;
 
-  String url = String(serverUrl) + "/api/esp32/acessos";
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
 
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000);
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
+    String url = String(serverUrl) + "/api/esp32/acessos";
 
-  int httpResponseCode = http.POST(jsonString);
+    http.setConnectTimeout(5000);
+    http.setTimeout(10000);
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
 
-  if (httpResponseCode > 0) {
-    Serial.println("✓ Acesso registrado no servidor!");
-  } else {
-    Serial.print("✗ Erro ao registrar acesso: ");
-    Serial.println(http.errorToString(httpResponseCode));
+    int httpResponseCode = http.POST(jsonString);
+
+    if (httpResponseCode > 0 && httpResponseCode < 400) {
+      Serial.println("✓ Acesso registrado no servidor!");
+      success = true;
+    } else {
+      retryCount++;
+      if (retryCount < MAX_RETRIES) {
+        Serial.print("Tentativa ");
+        Serial.print(retryCount);
+        Serial.println(" falhou. Retentando...");
+        delay(500);  // Esperar 500ms antes de retentar
+      } else {
+        Serial.print("✗ Erro ao registrar acesso (3 tentativas): ");
+        Serial.println(http.errorToString(httpResponseCode));
+      }
+    }
+
+    http.end();
   }
-
-  http.end();
 }
 
 void saveCardToServer(String cardUID, String usuario) {
@@ -364,33 +383,48 @@ void saveCardToServer(String cardUID, String usuario) {
     return;
   }
 
-  HTTPClient http;
+  const int MAX_RETRIES = 3;
+  int retryCount = 0;
+  bool success = false;
 
-  StaticJsonDocument<256> jsonDoc;
-  jsonDoc["cardId"] = cardUID;
-  jsonDoc["acao"] = "cartao_cadastrado";
-  jsonDoc["usuario"] = usuario;
+  while (retryCount < MAX_RETRIES && !success) {
+    HTTPClient http;
 
-  String jsonString;
-  serializeJson(jsonDoc, jsonString);
+    StaticJsonDocument<256> jsonDoc;
+    jsonDoc["cardId"] = cardUID;
+    jsonDoc["acao"] = "cartao_cadastrado";
+    jsonDoc["usuario"] = usuario;
 
-  String url = String(serverUrl) + "/api/esp32/acessos";
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
 
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000);
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
+    String url = String(serverUrl) + "/api/esp32/acessos";
 
-  int httpResponseCode = http.POST(jsonString);
+    http.setConnectTimeout(5000);
+    http.setTimeout(10000);
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
 
-  if (httpResponseCode > 0) {
-    Serial.println("✓ Cartão salvo no servidor!");
-  } else {
-    Serial.print("✗ Erro ao salvar cartão: ");
-    Serial.println(http.errorToString(httpResponseCode));
+    int httpResponseCode = http.POST(jsonString);
+
+    if (httpResponseCode > 0 && httpResponseCode < 400) {
+      Serial.println("✓ Cartão salvo no servidor!");
+      success = true;
+    } else {
+      retryCount++;
+      if (retryCount < MAX_RETRIES) {
+        Serial.print("Tentativa ");
+        Serial.print(retryCount);
+        Serial.println(" falhou. Retentando...");
+        delay(500);
+      } else {
+        Serial.print("✗ Erro ao salvar cartão (3 tentativas): ");
+        Serial.println(http.errorToString(httpResponseCode));
+      }
+    }
+
+    http.end();
   }
-
-  http.end();
 }
 
 void loadAuthorizedCardsFromServer() {
@@ -533,6 +567,17 @@ void loop() {
     return;
   }
 
+  // Verificar cooldown para evitar leitura duplicada
+  unsigned long currentTime = millis();
+  if (currentTime - lastCardReadTime < CARD_READ_COOLDOWN) {
+    Serial.println(F("Cartão ainda muito próximo. Aguardando..."));
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+    return;
+  }
+
+  lastCardReadTime = currentTime;
+
   Serial.print(F("UID do Cartao: "));
   String cardUID = getCardUID();
   Serial.println(cardUID);
@@ -559,4 +604,7 @@ void loop() {
 
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
+
+  // Aguardar tempo mínimo antes de aceitar novo cartão
+  delay(1000);
 }
