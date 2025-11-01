@@ -1,6 +1,8 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
+const axios = require('axios');
+const TelegramBot = require('../telegram-integration');
 
 // Verificar se Firebase já foi inicializado
 if (!admin.apps.length) {
@@ -50,6 +52,15 @@ if (!admin.apps.length) {
 
 const app = express();
 const db = admin.database();
+
+// Inicializar Telegram Bot se credenciais estiverem configuradas
+let telegramBot = null;
+if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+  telegramBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID);
+  console.log('✓ Telegram Bot inicializado');
+} else {
+  console.warn('⚠️ Telegram Bot não configurado (faltam credenciais)');
+}
 
 // Middlewares
 app.use(cors());
@@ -260,6 +271,15 @@ app.post('/api/esp32/telegram/ask', async (req, res) => {
       });
     }
 
+    // Verificar se Telegram Bot está configurado
+    if (!telegramBot) {
+      console.error('❌ Telegram não configurado');
+      return res.status(500).json({
+        success: false,
+        error: 'Telegram não configurado no servidor'
+      });
+    }
+
     // Gerar ID único para esta requisição
     const registrationId = `${cardUID}_${Date.now()}`;
 
@@ -271,13 +291,29 @@ app.post('/api/esp32/telegram/ask', async (req, res) => {
       expiresAt: admin.database.ServerValue.TIMESTAMP
     });
 
-    console.log(`✓ Requisição de cadastro criada: ${registrationId}`);
+    // Usar classe TelegramBot para pedir confirmação
+    try {
+      await telegramBot.askConfirmation(registrationId, cardUID);
 
-    res.json({
-      success: true,
-      registrationId: registrationId,
-      message: 'Confirmação enviada para Telegram'
-    });
+      console.log(`✓ Requisição de cadastro criada: ${registrationId}`);
+
+      res.json({
+        success: true,
+        registrationId: registrationId,
+        message: 'Confirmação enviada para Telegram'
+      });
+
+    } catch (telegramError) {
+      console.error('❌ Erro ao enviar mensagem Telegram:', telegramError.message);
+
+      // Mesmo com erro, retorna sucesso para ESP32 continuar aguardando
+      res.json({
+        success: true,
+        registrationId: registrationId,
+        message: 'Confirmação registrada (erro ao enviar Telegram)',
+        telegramError: telegramError.message
+      });
+    }
 
   } catch (error) {
     console.error('✗ Erro ao criar requisição:', error);
@@ -291,6 +327,7 @@ app.post('/api/esp32/telegram/ask', async (req, res) => {
 /**
  * POST /api/esp32/telegram/check
  * Verifica se o usuário confirmou ou cancelou no Telegram
+ * Usa a classe TelegramBot para verificar respostas
  */
 app.post('/api/esp32/telegram/check', async (req, res) => {
   try {
@@ -303,32 +340,75 @@ app.post('/api/esp32/telegram/check', async (req, res) => {
       });
     }
 
-    // Buscar status da requisição
-    const snapshot = await db.ref(`registrations/${registrationId}`).once('value');
-    const registration = snapshot.val();
+    // Verificar se Telegram Bot está configurado
+    if (!telegramBot) {
+      // Fallback: tentar carregar do Firebase
+      const snapshot = await db.ref(`registrations/${registrationId}`).once('value');
+      const registration = snapshot.val();
 
-    if (!registration) {
+      if (!registration) {
+        return res.json({
+          status: 'not_found',
+          message: 'Requisição não encontrada'
+        });
+      }
+
+      if (registration.status === 'confirmed') {
+        const confirmed = registration.response === '1';
+        res.json({
+          status: 'confirmed',
+          confirmed: confirmed,
+          message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
+        });
+
+        // Limpar registro após resposta
+        setTimeout(() => {
+          db.ref(`registrations/${registrationId}`).remove();
+        }, 5000);
+        return;
+      }
+
       return res.json({
-        status: 'not_found',
-        message: 'Requisição não encontrada'
+        status: 'waiting',
+        message: 'Aguardando resposta do Telegram'
       });
     }
 
-    // Verificar se já foi respondida
-    if (registration.status === 'confirmed') {
-      const confirmed = registration.response === '1';
+    // Usar classe TelegramBot para verificar resposta
+    try {
+      const result = await telegramBot.checkResponse(registrationId);
 
-      res.json({
-        status: 'confirmed',
-        confirmed: confirmed,
-        message: confirmed ? 'Cadastro confirmado' : 'Cadastro cancelado'
-      });
+      if (result.status === 'confirmed') {
+        // Armazenar resposta no Firebase também
+        await db.ref(`registrations/${registrationId}`).update({
+          status: 'confirmed',
+          response: result.confirmed ? '1' : '0',
+          respondedAt: admin.database.ServerValue.TIMESTAMP
+        });
 
-      // Limpar registro após resposta
-      setTimeout(() => {
-        db.ref(`registrations/${registrationId}`).remove();
-      }, 5000);
-    } else {
+        res.json({
+          status: 'confirmed',
+          confirmed: result.confirmed,
+          message: result.message
+        });
+      } else if (result.status === 'timeout') {
+        // Armazenar timeout no Firebase
+        await db.ref(`registrations/${registrationId}`).update({
+          status: 'timeout',
+          respondedAt: admin.database.ServerValue.TIMESTAMP
+        });
+
+        res.json({
+          status: 'timeout',
+          message: 'Tempo de resposta expirado'
+        });
+      } else {
+        // status: 'waiting' ou 'not_found'
+        res.json(result);
+      }
+
+    } catch (telegramError) {
+      console.error('⚠️ Erro ao consultar Telegram:', telegramError.message);
       res.json({
         status: 'waiting',
         message: 'Aguardando resposta do Telegram'
@@ -347,6 +427,7 @@ app.post('/api/esp32/telegram/check', async (req, res) => {
 /**
  * POST /api/esp32/telegram/respond
  * Endpoint para o bot Telegram responder (1 para confirmar, 0 para cancelar)
+ * Armazena a resposta no Firebase para que o TelegramBot possa recuperá-la
  */
 app.post('/api/esp32/telegram/respond', async (req, res) => {
   try {
@@ -367,7 +448,7 @@ app.post('/api/esp32/telegram/respond', async (req, res) => {
       });
     }
 
-    // Atualizar status da requisição
+    // Armazenar resposta no Firebase
     await db.ref(`registrations/${registrationId}`).update({
       status: 'confirmed',
       response: response,
@@ -375,6 +456,13 @@ app.post('/api/esp32/telegram/respond', async (req, res) => {
     });
 
     console.log(`✓ Resposta Telegram recebida: ${registrationId} = ${response}`);
+
+    // Se TelegramBot estiver configurado, atualizar o registro pendente também
+    if (telegramBot) {
+      // A classe TelegramBot guarda registros na memória (pendingRegistrations)
+      // Aqui apenas alertamos que a resposta foi recebida
+      console.log(`✓ Resposta armazenada em Firebase para TelegramBot processar`);
+    }
 
     res.json({
       success: true,
