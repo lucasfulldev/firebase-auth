@@ -219,12 +219,21 @@ app.get('/', (req, res) => {
     name: 'Firebase Gateway - ESP32',
     version: '1.0.0',
     description: 'Servidor intermediário entre ESP32 e Firebase Realtime Database (Vercel)',
+    status: 'online',
+    timestamp: new Date().toISOString(),
+    platform: 'Vercel Serverless',
     endpoints: {
       'POST /api/esp32/dados': 'Enviar dados do ESP32',
       'GET /api/esp32/dados': 'Ler últimos dados',
       'POST /api/esp32/acessos': 'Registrar acesso (RFID)',
       'GET /api/esp32/acessos': 'Ler últimos 10 acessos',
-      'GET /health': 'Status do servidor'
+      'GET /health': 'Status do servidor',
+      'GET /': 'Informações da API'
+    },
+    documentation: 'https://github.com/SEU_USUARIO/firebase-auth#readme',
+    firebase: {
+      project: process.env.FIREBASE_PROJECT_ID || 'não configurado',
+      database: process.env.FIREBASE_DATABASE_URL ? '✓ conectado' : '✗ não configurado'
     }
   });
 });
