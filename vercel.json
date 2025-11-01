@@ -1,8 +1,7 @@
 {
   "version": 2,
-  "buildCommand": "npm install",
   "functions": {
-    "api/index.js": {
+    "api.js": {
       "memory": 3008,
       "maxDuration": 30
     }
@@ -10,7 +9,7 @@
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/index.js"
+      "dest": "api.js"
     }
   ]
 }
