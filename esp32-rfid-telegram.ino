@@ -153,54 +153,72 @@ boolean isAuthorized(String cardUID) {
 void askTelegramConfirmation(String cardUID) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println(F("WiFi desconectado. Não é possível enviar confirmação."));
+    isEnrollmentMode = false;
     return;
   }
 
-  HTTPClient http;
+  const int MAX_RETRIES = 3;
+  int retryCount = 0;
+  bool success = false;
 
-  StaticJsonDocument<256> jsonDoc;
-  jsonDoc["cardUID"] = cardUID;
-  jsonDoc["action"] = "ask_confirmation";
+  while (retryCount < MAX_RETRIES && !success) {
+    HTTPClient http;
 
-  String jsonString;
-  serializeJson(jsonDoc, jsonString);
+    StaticJsonDocument<256> jsonDoc;
+    jsonDoc["cardUID"] = cardUID;
+    jsonDoc["action"] = "ask_confirmation";
 
-  String url = String(serverUrl) + "/api/esp32/telegram/ask";
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
 
-  Serial.println("\n--- Enviando confirmação Telegram ---");
-  Serial.println("URL: " + url);
-  Serial.println("Card: " + cardUID);
+    String url = String(serverUrl) + "/api/esp32/telegram/ask";
 
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000);
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
+    Serial.println("\n--- Enviando confirmação Telegram ---");
+    Serial.println("URL: " + url);
+    Serial.println("Card: " + cardUID);
 
-  int httpResponseCode = http.POST(jsonString);
+    http.setConnectTimeout(5000);
+    http.setTimeout(10000);
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
 
-  Serial.print("Status: ");
-  Serial.println(httpResponseCode);
+    int httpResponseCode = http.POST(jsonString);
 
-  if (httpResponseCode > 0) {
-    String response = http.getString();
-    Serial.println("✓ Requisição enviada ao Telegram!");
+    Serial.print("Status: ");
+    Serial.println(httpResponseCode);
 
-    // Parse resposta para obter o ID da requisição
-    StaticJsonDocument<256> responseDoc;
-    deserializeJson(responseDoc, response);
+    if (httpResponseCode > 0 && httpResponseCode < 400) {
+      String response = http.getString();
+      Serial.println("✓ Requisição enviada ao Telegram!");
 
-    registrationId = responseDoc["registrationId"].as<String>();
-    pendingCardUID = cardUID;
-    waitingForTelegramConfirmation = true;
-    registrationTimeout = millis();
+      // Parse resposta para obter o ID da requisição
+      StaticJsonDocument<256> responseDoc;
+      deserializeJson(responseDoc, response);
 
-    Serial.println("Aguardando resposta Telegram...");
-  } else {
-    Serial.print("✗ Erro ao enviar: ");
-    Serial.println(http.errorToString(httpResponseCode));
+      registrationId = responseDoc["registrationId"].as<String>();
+      pendingCardUID = cardUID;
+      waitingForTelegramConfirmation = true;
+      registrationTimeout = millis();
+
+      Serial.println("Aguardando resposta Telegram...");
+      success = true;
+    } else {
+      retryCount++;
+      if (retryCount < MAX_RETRIES) {
+        Serial.print("Tentativa ");
+        Serial.print(retryCount);
+        Serial.println(" falhou. Retentando em 1s...");
+        delay(1000);
+      } else {
+        Serial.print("✗ Erro ao enviar confirmação Telegram (3 tentativas): ");
+        Serial.println(http.errorToString(httpResponseCode));
+        isEnrollmentMode = false;
+        digitalWrite(INDICATION_LED, LOW);
+      }
+    }
+
+    http.end();
   }
-
-  http.end();
 }
 
 /**
@@ -211,7 +229,7 @@ void checkTelegramResponse() {
     return;
   }
 
-  // Verificar timeout
+  // Verificar timeout (5 minutos)
   if (millis() - registrationTimeout > REGISTRATION_TIMEOUT) {
     Serial.println(F("❌ Timeout: Confirmação Telegram expirou"));
     pendingCardUID = "";
@@ -223,6 +241,7 @@ void checkTelegramResponse() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("WiFi desconectado. Aguardando reconexão..."));
     return;
   }
 
@@ -242,7 +261,7 @@ void checkTelegramResponse() {
 
   int httpResponseCode = http.POST(jsonString);
 
-  if (httpResponseCode > 0) {
+  if (httpResponseCode > 0 && httpResponseCode < 400) {
     String response = http.getString();
     StaticJsonDocument<256> responseDoc;
 
@@ -266,6 +285,9 @@ void checkTelegramResponse() {
         waitingForTelegramConfirmation = false;
       }
     }
+  } else if (httpResponseCode > 0) {
+    Serial.print("⚠ Resposta inesperada do servidor: ");
+    Serial.println(httpResponseCode);
   }
 
   http.end();
@@ -433,31 +455,46 @@ void loadAuthorizedCardsFromServer() {
     return;
   }
 
-  HTTPClient http;
-  String url = String(serverUrl) + "/api/esp32/acessos";
+  const int MAX_RETRIES = 3;
+  int retryCount = 0;
+  bool success = false;
 
   Serial.println(F("\n--- Carregando cartões autorizados do servidor ---"));
 
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000);
-  http.begin(url);
+  while (retryCount < MAX_RETRIES && !success) {
+    HTTPClient http;
+    String url = String(serverUrl) + "/api/esp32/acessos";
 
-  int httpResponseCode = http.GET();
+    http.setConnectTimeout(5000);
+    http.setTimeout(10000);
+    http.begin(url);
 
-  if (httpResponseCode > 0) {
-    String response = http.getString();
-    Serial.println("✓ Resposta recebida do servidor");
+    int httpResponseCode = http.GET();
 
-    StaticJsonDocument<512> jsonDoc;
-    if (deserializeJson(jsonDoc, response) == DeserializationError::Ok) {
-      Serial.println("✓ Cartões carregados com sucesso!");
+    if (httpResponseCode > 0 && httpResponseCode < 400) {
+      String response = http.getString();
+      Serial.println("✓ Resposta recebida do servidor");
+
+      StaticJsonDocument<512> jsonDoc;
+      if (deserializeJson(jsonDoc, response) == DeserializationError::Ok) {
+        Serial.println("✓ Cartões carregados com sucesso!");
+        success = true;
+      }
+    } else {
+      retryCount++;
+      if (retryCount < MAX_RETRIES) {
+        Serial.print("Tentativa ");
+        Serial.print(retryCount);
+        Serial.println(" falhou. Retentando em 2s...");
+        delay(2000);
+      } else {
+        Serial.print("✗ Erro ao carregar cartões (3 tentativas): ");
+        Serial.println(http.errorToString(httpResponseCode));
+      }
     }
-  } else {
-    Serial.print("✗ Erro ao carregar cartões: ");
-    Serial.println(http.errorToString(httpResponseCode));
-  }
 
-  http.end();
+    http.end();
+  }
 }
 
 // =================================================================
