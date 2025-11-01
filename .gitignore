@@ -1,0 +1,31 @@
+# Dependências
+node_modules/
+package-lock.json
+npm-debug.log
+
+# Arquivos de credenciais (NUNCA envie para Git!)
+serviceAccountKey.json
+.env
+.env.local
+.env.*.local
+
+# Arquivos do IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Arquivos do SO
+.DS_Store
+Thumbs.db
+
+# Builds
+dist/
+build/
+.next/
+.vercel/
+
+# Logs
+logs/
+*.log

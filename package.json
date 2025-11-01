@@ -1,0 +1,32 @@
+{
+  "name": "firebase-auth",
+  "version": "1.0.0",
+  "description": "Firebase Gateway para ESP32 - Intermediária segura entre ESP32 e Firebase Realtime Database",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "firebase",
+    "esp32",
+    "iot",
+    "realtime-database",
+    "nodejs"
+  ],
+  "author": "Lucas",
+  "license": "MIT",
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "firebase-admin": "^11.11.1",
+    "firebase": "^10.7.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {}
+}
+
