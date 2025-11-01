@@ -125,11 +125,10 @@ Responda:
             if (update.message && update.message.text && update.message.date) {
               // update.message.date vem em formato UNIX timestamp (segundos)
               const messageDate = update.message.date * 1000; // Converter para milissegundos
+              const text = update.message.text.trim();
 
               // Só processar mensagens que chegaram DEPOIS da requisição
               if (messageDate > messageTimestamp) {
-                const text = update.message.text.trim();
-
                 if (text === '1' || text === '0') {
                   console.log(`✓ Resposta válida encontrada: "${text}" às ${new Date(messageDate).toLocaleString('pt-BR')}`);
 
@@ -143,8 +142,6 @@ Responda:
                     responseTime: messageDate
                   };
                 }
-              } else {
-                console.log(`⏭️ Ignorando mensagem antiga: ${text} (${new Date(messageDate).toLocaleString('pt-BR')})`);
               }
             }
           }
