@@ -110,7 +110,7 @@ Responda:
 
       console.log('updates', updates)
 
-      return { status: 'waiting', message: 'Aguardando resposta' };
+      return { status: 'waiting', message: 'Aguardando resposta', updates:updates };
 
     } catch (error) {
       console.error('✗ Erro ao verificar resposta:', error.message);
