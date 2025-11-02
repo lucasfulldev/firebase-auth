@@ -30,9 +30,13 @@ float lastDistance = 0;  // Última distância medida em cm
 // Variáveis de controle de alertas da porta
 bool doorOpen = false;                      // Rastreia se a porta está aberta (distância > 5cm)
 bool accessAuthorized = false;              // Flag que acesso foi autorizado
-unsigned long redBlinkMillis = 0;           // Controle do pisca LED vermelho
-bool redLedState = false;                   // Estado atual do LED vermelho
-const long RED_BLINK_INTERVAL = 500;        // Pisca a cada 500ms (pode ser ajustado)
+unsigned long redBlinkMillis = 0;           // Controle do pisca LED
+bool currentLedIsGreen = true;              // true = verde, false = amarelo
+int blinkCount = 0;                         // Contador de piscadas
+const long BLINK_ON_TIME = 100;             // Tempo que LED fica aceso (100ms)
+const long BLINK_OFF_TIME = 100;            // Tempo entre piscadas (100ms)
+const int BLINKS_PER_COLOR = 2;             // 2 piscadas por cor
+int currentBlink = 0;                       // Qual piscada estamos (0 ou 1)
 
 // Variáveis para controle de tempo de acesso com porta fechada
 bool accessGrantedWhileClosed = false;      // Flag que acesso foi concedido com porta fechada
@@ -293,36 +297,89 @@ void checkAccessTimeout() {
 void handleDoorAlerts() {
   // Se acesso foi concedido com porta fechada, manter LED verde aceso
   if (accessGrantedWhileClosed && !doorOpen) {
-    digitalWrite(ACTUATOR_PIN, HIGH);  // LED verde
+    redBlinkMillis = millis();  // Resetar timer
+    digitalWrite(ACTUATOR_PIN, HIGH);   // LED verde
     digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
+    digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
     return;
   }
 
-  // Se porta não está aberta, desligar todos LEDs
+  // Se porta não está aberta, desligar todos LEDs e buzzer
   if (!doorOpen) {
+    redBlinkMillis = millis();  // Resetar timer
     digitalWrite(ACTUATOR_PIN, LOW);
     digitalWrite(DENIED_LED, LOW);
+    digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
+    digitalWrite(BUZZER_PIN, LOW);      // Desligar buzzer
     return;
   }
 
   // PORTA ESTÁ ABERTA
   if (accessAuthorized || personEnteredAfterAccess) {
     // Acesso foi autorizado - manter LED verde aceso
-    digitalWrite(ACTUATOR_PIN, HIGH);  // LED verde
+    redBlinkMillis = millis();  // Resetar timer
+    digitalWrite(ACTUATOR_PIN, HIGH);   // LED verde
     digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
+    digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
+    digitalWrite(BUZZER_PIN, LOW);      // Desligar buzzer
   } else {
-    // Acesso NÃO autorizado - LED vermelho pisca
+    // Acesso NÃO autorizado - LED verde e amarelo alternam (efeito polícia com 2 piscadas)
     unsigned long currentMillis = millis();
 
-    // Controlar pisca do LED vermelho
-    if (currentMillis - redBlinkMillis >= RED_BLINK_INTERVAL) {
+    // Inicializar timer se for a primeira vez
+    if (redBlinkMillis == 0) {
       redBlinkMillis = currentMillis;
-      redLedState = !redLedState;  // Alternar estado
-      digitalWrite(DENIED_LED, redLedState ? HIGH : LOW);
     }
 
-    // Desligar LED verde
-    digitalWrite(ACTUATOR_PIN, LOW);
+    unsigned long elapsedTime = currentMillis - redBlinkMillis;
+
+    // Calcular em qual fase estamos
+    // Fase 0: Verde ON (0-100ms)
+    // Fase 1: Verde OFF (100-200ms)
+    // Fase 2: Verde ON (200-300ms)
+    // Fase 3: Verde OFF (300-400ms)
+    // Fase 4: Amarelo ON (400-500ms)
+    // Fase 5: Amarelo OFF (500-600ms)
+    // Fase 6: Amarelo ON (600-700ms)
+    // Fase 7: Amarelo OFF (700-800ms) -> depois volta para fase 0
+
+    int totalCycleTime = BLINK_ON_TIME * 8;  // 800ms total
+    int phase = (elapsedTime / BLINK_ON_TIME) % 8;
+
+    // Desligar LED vermelho sempre
+    digitalWrite(DENIED_LED, LOW);
+
+    if (phase < 4) {
+      // Piscadas do vermelho (fases 0-3)
+      if (phase == 0 || phase == 2) {
+        // Vermelho LIGADO + Buzzer
+        digitalWrite(DENIED_LED, HIGH);
+        digitalWrite(ACTUATOR_PIN, LOW);
+        digitalWrite(INDICATION_LED, LOW);
+        digitalWrite(BUZZER_PIN, HIGH);
+      } else {
+        // Vermelho DESLIGADO + Buzzer OFF
+        digitalWrite(DENIED_LED, LOW);
+        digitalWrite(ACTUATOR_PIN, LOW);
+        digitalWrite(INDICATION_LED, LOW);
+        digitalWrite(BUZZER_PIN, LOW);
+      }
+    } else {
+      // Piscadas do verde (fases 4-7)
+      if (phase == 4 || phase == 6) {
+        // Verde LIGADO + Buzzer
+        digitalWrite(DENIED_LED, LOW);
+        digitalWrite(ACTUATOR_PIN, HIGH);
+        digitalWrite(INDICATION_LED, LOW);
+        digitalWrite(BUZZER_PIN, HIGH);
+      } else {
+        // Verde DESLIGADO + Buzzer OFF
+        digitalWrite(DENIED_LED, LOW);
+        digitalWrite(ACTUATOR_PIN, LOW);
+        digitalWrite(INDICATION_LED, LOW);
+        digitalWrite(BUZZER_PIN, LOW);
+      }
+    }
   }
 }
 
