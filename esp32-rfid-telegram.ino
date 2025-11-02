@@ -297,15 +297,25 @@ void checkAccessTimeout() {
 void handleDoorAlerts() {
   // Se acesso foi concedido com porta fechada, manter LED verde aceso
   if (accessGrantedWhileClosed && !doorOpen) {
+    Serial.println(F("DEBUG handleDoorAlerts - Mantendo LED verde aceso"));
+    Serial.print(F("DEBUG - Estado do pino ACTUATOR_PIN ANTES: "));
+    Serial.println(digitalRead(ACTUATOR_PIN));
+
     redBlinkMillis = millis();  // Resetar timer
     digitalWrite(ACTUATOR_PIN, HIGH);   // LED verde
+
+    Serial.print(F("DEBUG - Estado do pino ACTUATOR_PIN DEPOIS: "));
+    Serial.println(digitalRead(ACTUATOR_PIN));
+
     digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
     digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
+    digitalWrite(BUZZER_PIN, LOW);      // Desligar buzzer
     return;
   }
 
   // Se porta não está aberta, desligar todos LEDs e buzzer
   if (!doorOpen) {
+    Serial.println(F("DEBUG handleDoorAlerts - Porta fechada, desligando LEDs"));
     redBlinkMillis = millis();  // Resetar timer
     digitalWrite(ACTUATOR_PIN, LOW);
     digitalWrite(DENIED_LED, LOW);
@@ -955,7 +965,16 @@ void loop() {
   String cardUID = getCardUID();
   Serial.println(cardUID);
 
+  // Feedback visual imediato - LEDs verde e vermelho juntos indicam processamento
+  digitalWrite(ACTUATOR_PIN, HIGH);   // LED verde
+  digitalWrite(DENIED_LED, HIGH);     // LED vermelho
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(50);  // Beep curto
+  digitalWrite(BUZZER_PIN, LOW);
+
   if (isAuthorized(cardUID)) {
+    // Desligar LED vermelho após autenticação bem-sucedida (verde continua)
+    digitalWrite(DENIED_LED, LOW);
     Serial.println(F(">>> ACESSO PERMITIDO! <<<"));
     sendAccessToServer(cardUID, "acesso_concedido", "Usuario");
 
@@ -965,6 +984,13 @@ void loop() {
       accessGrantedWhileClosed = true;
       accessGrantedTime = millis();
       personEnteredAfterAccess = false;
+
+      Serial.print(F("DEBUG - accessGrantedWhileClosed: "));
+      Serial.println(accessGrantedWhileClosed);
+      Serial.print(F("DEBUG - doorOpen: "));
+      Serial.println(doorOpen);
+      Serial.print(F("DEBUG - accessGrantedTime: "));
+      Serial.println(accessGrantedTime);
 
       // Manter LED verde aceso
       digitalWrite(ACTUATOR_PIN, HIGH);
@@ -977,16 +1003,24 @@ void loop() {
       accessAuthorized = true;
       personEnteredAfterAccess = true;
 
+      // Desligar buzzer e LED vermelho imediatamente se estava apitando
+      digitalWrite(BUZZER_PIN, LOW);
+      digitalWrite(DENIED_LED, LOW);
+      digitalWrite(ACTUATOR_PIN, HIGH);  // Ligar LED verde imediatamente
+
       digitalWrite(RELAY_PIN, HIGH);
       delay(100);
       digitalWrite(RELAY_PIN, LOW);
       // LED verde fica aceso (controlado por handleDoorAlerts)
     }
   } else {
+    // Desligar LED verde após autenticação falhar (vermelho continua)
+    digitalWrite(ACTUATOR_PIN, LOW);
+
     Serial.println(F(">>> ACESSO NEGADO! <<<"));
     sendAccessToServer(cardUID, "acesso_negado", "Desconhecido");
 
-    digitalWrite(DENIED_LED, HIGH);
+    // LED vermelho já está aceso, apenas ativar buzzer
     digitalWrite(BUZZER_PIN, HIGH);
     delay(500);
     digitalWrite(DENIED_LED, LOW);
