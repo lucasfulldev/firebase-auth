@@ -213,7 +213,7 @@ app.get('/api/esp32/acessos', async (req, res) => {
 
 /**
  * POST /api/esp32/check-authorization
- * Valida se um cartão está autorizado
+ * Valida se um cartão está autorizado (busca em registrations confirmados)
  */
 app.post('/api/esp32/check-authorization', async (req, res) => {
   try {
@@ -227,12 +227,12 @@ app.post('/api/esp32/check-authorization', async (req, res) => {
       });
     }
 
-    // Buscar cartões autorizados no Firebase
-    const snapshot = await db.ref('cartoes_autorizados').once('value');
-    const cartoes = snapshot.val();
+    // Buscar todas as registrations no Firebase
+    const snapshot = await db.ref('registrations').once('value');
+    const registrations = snapshot.val();
 
-    if (!cartoes) {
-      console.log(`✗ Cartão ${cardId} - nenhum cartão autorizado no banco`);
+    if (!registrations) {
+      console.log(`✗ Cartão ${cardId} - nenhuma registration no banco`);
       return res.json({
         success: true,
         authorized: false,
@@ -240,11 +240,15 @@ app.post('/api/esp32/check-authorization', async (req, res) => {
       });
     }
 
-    // Verificar se o cardId existe nos cartões autorizados
-    const isAuthorized = Object.values(cartoes).some(cartao => cartao.cardId === cardId);
+    // Procurar cartão que foi confirmado (status: 'confirmed' e response: '1')
+    const isAuthorized = Object.values(registrations).some(registration =>
+      registration.cardUID === cardId &&
+      registration.status === 'confirmed' &&
+      registration.response === '1'
+    );
 
     if (isAuthorized) {
-      console.log(`✓ Cartão ${cardId} - AUTORIZADO`);
+      console.log(`✓ Cartão ${cardId} - AUTORIZADO (confirmado via Telegram)`);
       res.json({
         success: true,
         authorized: true,
