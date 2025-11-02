@@ -18,6 +18,22 @@
 #define BUZZER_PIN 13
 #define RELAY_PIN 32
 
+// Sensor Ultrassônico HCSR04
+#define TRIG_PIN 16   // Pino Trig do sensor ultrassônico (GPIO 34)
+#define ECHO_PIN 4    // Pino Echo do sensor ultrassônico (GPIO 4 - FUNCIONANDO!)
+
+// Variáveis do sensor ultrassônico
+unsigned long lastUltrasonicReadTime = 0;
+const long ULTRASONIC_READ_INTERVAL = 1000;  // Ler a cada 1 segundo (foi 500ms)
+float lastDistance = 0;  // Última distância medida em cm
+
+// Variáveis de controle de alertas da porta
+bool doorOpen = false;                      // Rastreia se a porta está aberta (distância > 5cm)
+bool accessAuthorized = false;              // Flag que acesso foi autorizado
+unsigned long redBlinkMillis = 0;           // Controle do pisca LED vermelho
+bool redLedState = false;                   // Estado atual do LED vermelho
+const long RED_BLINK_INTERVAL = 500;        // Pisca a cada 500ms (pode ser ajustado)
+
 // =================================================================
 // 2. CONFIGURAÇÕES WiFi
 // =================================================================
@@ -135,12 +151,203 @@ String getCardUID() {
 }
 
 boolean isAuthorized(String cardUID) {
-  for (int i = 0; i < totalAuthorizedCards; i++) {
-    if (authorizedCards[i] == cardUID) {
-      return true;
+  // Se WiFi está desconectado, usar cache local como fallback
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("WiFi desconectado. Usando cache local..."));
+    for (int i = 0; i < totalAuthorizedCards; i++) {
+      if (authorizedCards[i] == cardUID) {
+        return true;
+      }
     }
+    return false;
   }
+
+  // Fazer requisição ao servidor para validar cartão
+  const int MAX_RETRIES = 2;
+  int retryCount = 0;
+  boolean authorized = false;
+
+  while (retryCount < MAX_RETRIES && !authorized) {
+    HTTPClient http;
+
+    StaticJsonDocument<256> jsonDoc;
+    jsonDoc["cardId"] = cardUID;
+
+    String jsonString;
+    serializeJson(jsonDoc, jsonString);
+
+    String url = String(serverUrl) + "/api/esp32/check-authorization";
+
+    Serial.println("\n--- Verificando autorização ---");
+    Serial.println("URL: " + url);
+    Serial.println("Card: " + cardUID);
+
+    http.setConnectTimeout(5000);
+    http.setTimeout(10000);
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+
+    int httpResponseCode = http.POST(jsonString);
+
+    Serial.print("Status: ");
+    Serial.println(httpResponseCode);
+
+    if (httpResponseCode > 0 && httpResponseCode < 400) {
+      String response = http.getString();
+      Serial.println("✓ Resposta recebida do servidor");
+
+      StaticJsonDocument<256> responseDoc;
+      if (deserializeJson(responseDoc, response) == DeserializationError::Ok) {
+        authorized = responseDoc["authorized"].as<bool>();
+
+        if (authorized) {
+          Serial.println("✓ Cartão AUTORIZADO pelo servidor!");
+        } else {
+          Serial.println("✗ Cartão NÃO AUTORIZADO pelo servidor!");
+        }
+
+        http.end();
+        return authorized;
+      }
+    } else {
+      retryCount++;
+      if (retryCount < MAX_RETRIES) {
+        Serial.print("Tentativa ");
+        Serial.print(retryCount);
+        Serial.println(" falhou. Retentando...");
+        delay(500);
+      } else {
+        Serial.print("✗ Erro ao verificar autorização (2 tentativas): ");
+        Serial.println(http.errorToString(httpResponseCode));
+
+        // Fallback: usar cache local se houver erro na requisição
+        Serial.println("Usando cache local como fallback...");
+        for (int i = 0; i < totalAuthorizedCards; i++) {
+          if (authorizedCards[i] == cardUID) {
+            http.end();
+            return true;
+          }
+        }
+      }
+    }
+
+    http.end();
+  }
+
   return false;
+}
+
+/**
+ * Controla os alertas de LED quando a porta está aberta
+ * - Porta aberta SEM acesso: LED vermelho pisca
+ * - Porta aberta COM acesso: LED verde fica aceso
+ * - Porta fechada: LEDs desligam
+ */
+void handleDoorAlerts() {
+  // Se porta não está aberta, não fazer nada
+  if (!doorOpen) {
+    return;
+  }
+
+  // PORTA ESTÁ ABERTA
+  if (accessAuthorized) {
+    // Acesso foi autorizado - manter LED verde aceso
+    digitalWrite(ACTUATOR_PIN, HIGH);  // LED verde
+    digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
+  } else {
+    // Acesso NÃO autorizado - LED vermelho pisca
+    unsigned long currentMillis = millis();
+
+    // Controlar pisca do LED vermelho
+    if (currentMillis - redBlinkMillis >= RED_BLINK_INTERVAL) {
+      redBlinkMillis = currentMillis;
+      redLedState = !redLedState;  // Alternar estado
+      digitalWrite(DENIED_LED, redLedState ? HIGH : LOW);
+    }
+
+    // Desligar LED verde
+    digitalWrite(ACTUATOR_PIN, LOW);
+  }
+}
+
+/**
+ * Mede a distância usando o sensor ultrassônico HCSR04
+ * Retorna a distância em centímetros
+ */
+float measureDistance() {
+  // Garantir que TRIG está LOW antes de começar
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  // Enviar pulso trigger (10µs)
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW); 
+  // Medir tempo de retorno do eco
+  // timeout de 60ms = ~10 metros de alcance
+  unsigned long duration = pulseIn(ECHO_PIN, HIGH);
+
+  
+  // Calcular distância usando a fórmula do YouTube
+  // distancia = tempoSom / 58
+  // (equivalente a: (tempo / 2) * 0.0343)
+  float distancia = duration / 58.0;
+
+  return distancia;
+}
+
+ 
+
+/**
+ * Verifica distância e executa ações se necessário
+ */
+void checkUltrasonicSensor() {
+  unsigned long currentTime = millis();
+
+  // Ler sensor a cada 1 segundo
+  if (currentTime - lastUltrasonicReadTime >= ULTRASONIC_READ_INTERVAL) {
+    lastUltrasonicReadTime = currentTime;
+
+    float distance = measureDistance();
+
+    // Verificar se a leitura é válida
+    if (distance > 0) {
+      // Aceitar leituras entre 2cm e 4 metros
+      if (distance >= 2 && distance <= 400) {
+        lastDistance = distance;
+
+        Serial.print("📏 Distância: ");
+        Serial.print(distance, 2);  // 2 casas decimais
+        Serial.println(" cm");
+
+        // ===== LÓGICA DE DETECÇÃO DE PORTA =====
+        // Detectar mudança de estado da porta
+        bool wasDoorOpen = doorOpen;
+        doorOpen = (distance > 5.0);  // Porta aberta se distância > 5cm
+
+        // Se porta estava fechada e agora abriu
+        if (!wasDoorOpen && doorOpen) {
+          Serial.println("🔓 PORTA ABERTA! Aguardando autorização...");
+          accessAuthorized = false;  // Resetar autorização quando porta abre
+        }
+
+        // Se porta está fechando (voltando de aberta para fechada)
+        if (wasDoorOpen && !doorOpen) {
+          Serial.println("🔒 Porta fechada. Sistema resetado.");
+          accessAuthorized = false;  // Resetar autorização
+          digitalWrite(ACTUATOR_PIN, LOW);
+          digitalWrite(DENIED_LED, LOW);
+        }
+
+      } else if (distance > 400) {
+        Serial.println("📏 Objeto muito longe (>400cm)");
+      } else {
+        Serial.println("📏 Objeto muito perto (<2cm)");
+        Serial.print(distance, 2);
+      }
+    }
+    // Se falhar, apenas fica silencioso (sem "⚠ Erro")
+  }
 }
 
 // =================================================================
@@ -519,6 +726,10 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(RELAY_PIN, OUTPUT);
 
+  // Configura Sensor Ultrassônico
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
   // Inicializa os pinos
   digitalWrite(ACTUATOR_PIN, LOW);
   digitalWrite(INDICATION_LED, LOW);
@@ -537,6 +748,8 @@ void setup() {
   // Carrega cartões do servidor
   loadAuthorizedCardsFromServer();
 
+  delay(1000); 
+
   Serial.println(F("\nSistema pronto para uso."));
 }
 
@@ -546,6 +759,12 @@ void setup() {
 
 void loop() {
   checkWiFiConnection();
+
+  // Verificar sensor ultrassônico continuamente
+  checkUltrasonicSensor();
+
+  // Controlar alertas de LED quando porta está aberta
+  handleDoorAlerts();
 
   // Verificar resposta do Telegram se estiver aguardando
   if (waitingForTelegramConfirmation) {
@@ -622,6 +841,9 @@ void loop() {
   if (isAuthorized(cardUID)) {
     Serial.println(F(">>> ACESSO PERMITIDO! <<<"));
     sendAccessToServer(cardUID, "acesso_concedido", "Usuario");
+
+    // Autorizar acesso e ativar o sistema de alerta
+    accessAuthorized = true;
 
     digitalWrite(ACTUATOR_PIN, HIGH);
     digitalWrite(RELAY_PIN, HIGH);

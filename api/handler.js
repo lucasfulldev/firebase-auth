@@ -212,6 +212,64 @@ app.get('/api/esp32/acessos', async (req, res) => {
 });
 
 /**
+ * POST /api/esp32/check-authorization
+ * Valida se um cartão está autorizado
+ */
+app.post('/api/esp32/check-authorization', async (req, res) => {
+  try {
+    const { cardId } = req.body;
+
+    if (!cardId) {
+      return res.status(400).json({
+        success: false,
+        authorized: false,
+        error: 'Faltam campos: cardId'
+      });
+    }
+
+    // Buscar cartões autorizados no Firebase
+    const snapshot = await db.ref('cartoes_autorizados').once('value');
+    const cartoes = snapshot.val();
+
+    if (!cartoes) {
+      console.log(`✗ Cartão ${cardId} - nenhum cartão autorizado no banco`);
+      return res.json({
+        success: true,
+        authorized: false,
+        message: 'Cartão não autorizado'
+      });
+    }
+
+    // Verificar se o cardId existe nos cartões autorizados
+    const isAuthorized = Object.values(cartoes).some(cartao => cartao.cardId === cardId);
+
+    if (isAuthorized) {
+      console.log(`✓ Cartão ${cardId} - AUTORIZADO`);
+      res.json({
+        success: true,
+        authorized: true,
+        message: 'Cartão autorizado'
+      });
+    } else {
+      console.log(`✗ Cartão ${cardId} - NÃO AUTORIZADO`);
+      res.json({
+        success: true,
+        authorized: false,
+        message: 'Cartão não autorizado'
+      });
+    }
+
+  } catch (error) {
+    console.error('✗ Erro ao verificar autorização:', error);
+    res.status(500).json({
+      success: false,
+      authorized: false,
+      error: error.message
+    });
+  }
+});
+
+/**
  * GET /health
  */
 app.get('/health', (req, res) => {
@@ -238,6 +296,7 @@ app.get('/', (req, res) => {
       'GET /api/esp32/dados': 'Ler últimos dados',
       'POST /api/esp32/acessos': 'Registrar acesso (RFID)',
       'GET /api/esp32/acessos': 'Ler últimos 10 acessos',
+      'POST /api/esp32/check-authorization': 'Validar se cartão está autorizado',
       'POST /api/esp32/telegram/ask': 'Pedir confirmação Telegram',
       'POST /api/esp32/telegram/check': 'Verificar resposta Telegram',
       'POST /api/esp32/telegram/respond': 'Registrar resposta Telegram',
