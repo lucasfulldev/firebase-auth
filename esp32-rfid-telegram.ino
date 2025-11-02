@@ -34,6 +34,12 @@ unsigned long redBlinkMillis = 0;           // Controle do pisca LED vermelho
 bool redLedState = false;                   // Estado atual do LED vermelho
 const long RED_BLINK_INTERVAL = 500;        // Pisca a cada 500ms (pode ser ajustado)
 
+// Variáveis para controle de tempo de acesso com porta fechada
+bool accessGrantedWhileClosed = false;      // Flag que acesso foi concedido com porta fechada
+unsigned long accessGrantedTime = 0;        // Tempo quando acesso foi concedido
+const long ACCESS_TIMEOUT = 10000;          // 10 segundos em milissegundos
+bool personEnteredAfterAccess = false;      // Flag que pessoa entrou após acesso autorizado
+
 // =================================================================
 // 2. CONFIGURAÇÕES WiFi
 // =================================================================
@@ -238,19 +244,69 @@ boolean isAuthorized(String cardUID) {
 }
 
 /**
+ * Gerencia o timeout de acesso quando a porta está fechada
+ * - Se 10 segundos passaram sem pessoa entrar: reseta o acesso
+ * - Se pessoa entrou (distância > 5): mantém acesso até fechar de novo
+ */
+void checkAccessTimeout() {
+  // Verificar se há qualquer tipo de acesso ativo
+  if (!accessGrantedWhileClosed && !personEnteredAfterAccess && !accessAuthorized) {
+    return;
+  }
+
+  unsigned long currentTime = millis();
+  unsigned long elapsedTime = currentTime - accessGrantedTime;
+
+  // Se pessoa entrou (distância > 5cm), marcar que entrou
+  if (doorOpen && !personEnteredAfterAccess && accessGrantedWhileClosed) {
+    personEnteredAfterAccess = true;
+    Serial.println(F("✓ Pessoa entrou! LED verde mantém-se aceso."));
+  }
+
+  // Se a porta fechou APÓS ter sido aberta com acesso autorizado
+  if (!doorOpen && (personEnteredAfterAccess || accessAuthorized)) {
+    Serial.println(F("🔒 Porta fechada após acesso. Resetando."));
+    accessGrantedWhileClosed = false;
+    personEnteredAfterAccess = false;
+    accessAuthorized = false;
+    digitalWrite(ACTUATOR_PIN, LOW);
+    return;
+  }
+
+  // Timeout de 10 segundos: se pessoa NÃO entrou e tempo expirou (apenas para accessGrantedWhileClosed)
+  if (accessGrantedWhileClosed && !personEnteredAfterAccess && (elapsedTime > ACCESS_TIMEOUT)) {
+    Serial.println(F("⏱ Timeout: Acesso expirou (10s sem entrar). Voltando ao fluxo normal."));
+    accessGrantedWhileClosed = false;
+    personEnteredAfterAccess = false;
+    accessAuthorized = false;
+    digitalWrite(ACTUATOR_PIN, LOW);
+  }
+}
+
+/**
  * Controla os alertas de LED quando a porta está aberta
  * - Porta aberta SEM acesso: LED vermelho pisca
  * - Porta aberta COM acesso: LED verde fica aceso
+ * - Porta fechada COM acesso recente: mantém LED verde
  * - Porta fechada: LEDs desligam
  */
 void handleDoorAlerts() {
-  // Se porta não está aberta, não fazer nada
+  // Se acesso foi concedido com porta fechada, manter LED verde aceso
+  if (accessGrantedWhileClosed && !doorOpen) {
+    digitalWrite(ACTUATOR_PIN, HIGH);  // LED verde
+    digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
+    return;
+  }
+
+  // Se porta não está aberta, desligar todos LEDs
   if (!doorOpen) {
+    digitalWrite(ACTUATOR_PIN, LOW);
+    digitalWrite(DENIED_LED, LOW);
     return;
   }
 
   // PORTA ESTÁ ABERTA
-  if (accessAuthorized) {
+  if (accessAuthorized || personEnteredAfterAccess) {
     // Acesso foi autorizado - manter LED verde aceso
     digitalWrite(ACTUATOR_PIN, HIGH);  // LED verde
     digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
@@ -334,8 +390,9 @@ void checkUltrasonicSensor() {
         // Se porta está fechando (voltando de aberta para fechada)
         if (wasDoorOpen && !doorOpen) {
           Serial.println("🔒 Porta fechada. Sistema resetado.");
+          // Não resetar as flags de accessGrantedWhileClosed e personEnteredAfterAccess aqui
+          // Elas são resetadas pela função checkAccessTimeout()
           accessAuthorized = false;  // Resetar autorização
-          digitalWrite(ACTUATOR_PIN, LOW);
           digitalWrite(DENIED_LED, LOW);
         }
 
@@ -763,6 +820,9 @@ void loop() {
   // Verificar sensor ultrassônico continuamente
   checkUltrasonicSensor();
 
+  // Verificar timeout de acesso com porta fechada
+  checkAccessTimeout();
+
   // Controlar alertas de LED quando porta está aberta
   handleDoorAlerts();
 
@@ -842,14 +902,29 @@ void loop() {
     Serial.println(F(">>> ACESSO PERMITIDO! <<<"));
     sendAccessToServer(cardUID, "acesso_concedido", "Usuario");
 
-    // Autorizar acesso e ativar o sistema de alerta
-    accessAuthorized = true;
+    // Se porta está fechada, ativar sistema de timeout de 10 segundos
+    if (!doorOpen) {
+      Serial.println(F("🚪 Porta fechada. LED verde ficará aceso por 10 segundos."));
+      accessGrantedWhileClosed = true;
+      accessGrantedTime = millis();
+      personEnteredAfterAccess = false;
 
-    digitalWrite(ACTUATOR_PIN, HIGH);
-    digitalWrite(RELAY_PIN, HIGH);
-    delay(500);
-    digitalWrite(ACTUATOR_PIN, LOW);
-    digitalWrite(RELAY_PIN, LOW);
+      // Manter LED verde aceso
+      digitalWrite(ACTUATOR_PIN, HIGH);
+      digitalWrite(RELAY_PIN, HIGH);
+      delay(100);
+      digitalWrite(RELAY_PIN, LOW);
+      // Não desligar o ACTUATOR_PIN aqui, pois ele deve ficar aceso por 10 segundos
+    } else {
+      // Porta está aberta - autorizar normalmente
+      accessAuthorized = true;
+      personEnteredAfterAccess = true;
+
+      digitalWrite(RELAY_PIN, HIGH);
+      delay(100);
+      digitalWrite(RELAY_PIN, LOW);
+      // LED verde fica aceso (controlado por handleDoorAlerts)
+    }
   } else {
     Serial.println(F(">>> ACESSO NEGADO! <<<"));
     sendAccessToServer(cardUID, "acesso_negado", "Desconhecido");
