@@ -304,6 +304,7 @@ app.get('/', (req, res) => {
       'POST /api/esp32/telegram/ask': 'Pedir confirmação Telegram',
       'POST /api/esp32/telegram/check': 'Verificar resposta Telegram',
       'POST /api/esp32/telegram/respond': 'Registrar resposta Telegram',
+      'POST /api/esp32/telegram/alert': 'Enviar alerta de segurança ao Telegram',
       'GET /health': 'Status do servidor',
       'GET /': 'Informações da API'
     },
@@ -534,6 +535,81 @@ app.post('/api/esp32/telegram/respond', async (req, res) => {
 
   } catch (error) {
     console.error('✗ Erro ao registrar resposta:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/esp32/telegram/alert
+ * Recebe alertas do ESP32 e envia para o Telegram
+ *
+ * Body esperado:
+ * {
+ *   "message": "🚨 ALERTA: Porta aberta sem autorização! Alarme ativado.",
+ *   "type": "alarm"
+ * }
+ */
+app.post('/api/esp32/telegram/alert', async (req, res) => {
+  try {
+    const { message, type } = req.body;
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltam campos: message'
+      });
+    }
+
+    // Registrar alerta no Firebase
+    const alertData = {
+      message,
+      type: type || 'general',
+      timestamp: admin.database.ServerValue.TIMESTAMP,
+      read: false
+    };
+
+    const ref = await db.ref('alerts').push(alertData);
+    console.log(`✓ Alerta registrado no Firebase: ${ref.key}`);
+
+    // Tentar enviar ao Telegram (se configurado)
+    let telegramSent = false;
+    let telegramError = null;
+
+    if (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+      try {
+        const botToken = process.env.TELEGRAM_BOT_TOKEN;
+        const chatId = process.env.TELEGRAM_CHAT_ID;
+        const telegramUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+        await axios.post(telegramUrl, {
+          chat_id: chatId,
+          text: message,
+          parse_mode: 'Markdown'
+        });
+
+        telegramSent = true;
+        console.log('✓ Alerta enviado ao Telegram');
+      } catch (telegramErr) {
+        telegramError = telegramErr.message;
+        console.error('✗ Erro ao enviar ao Telegram:', telegramErr.message);
+      }
+    } else {
+      console.log('⚠ Telegram não configurado (TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID)');
+    }
+
+    res.json({
+      success: true,
+      message: 'Alerta registrado',
+      alertId: ref.key,
+      telegramSent: telegramSent,
+      telegramError: telegramError
+    });
+
+  } catch (error) {
+    console.error('✗ Erro ao processar alerta:', error);
     res.status(500).json({
       success: false,
       error: error.message
