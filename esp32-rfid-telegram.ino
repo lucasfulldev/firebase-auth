@@ -38,6 +38,9 @@ const long BLINK_OFF_TIME = 100;            // Tempo entre piscadas (100ms)
 const int BLINKS_PER_COLOR = 2;             // 2 piscadas por cor
 int currentBlink = 0;                       // Qual piscada estamos (0 ou 1)
 
+// Variáveis do sistema de alarme
+bool alarmActive = false;                   // Alarme está ativado (só desliga com cartão autorizado)
+
 // Variáveis para controle de tempo de acesso com porta fechada
 bool accessGrantedWhileClosed = false;      // Flag que acesso foi concedido com porta fechada
 unsigned long accessGrantedTime = 0;        // Tempo quando acesso foi concedido
@@ -74,6 +77,12 @@ const long requiredPressTime = 10000;  // 10 segundos em milissegundos
 bool isEnrollmentMode = false;
 unsigned long previousMillisBlink = 0;
 const long blinkInterval = 250;  // Pisca a cada 250ms
+
+// Variáveis para detecção de duplo clique
+unsigned long lastButtonReleaseTime = 0;
+const long DOUBLE_CLICK_TIMEOUT = 500;  // 500ms para detectar duplo clique
+int clickCount = 0;
+bool lastButtonState = HIGH;  // HIGH = não pressionado (INPUT_PULLUP)
 
 // Variáveis para controle de leitura de cartão
 unsigned long lastCardReadTime = 0;
@@ -289,10 +298,10 @@ void checkAccessTimeout() {
 
 /**
  * Controla os alertas de LED quando a porta está aberta
- * - Porta aberta SEM acesso: LED vermelho pisca
+ * - Porta aberta SEM acesso: LED vermelho pisca + alarme ativado
  * - Porta aberta COM acesso: LED verde fica aceso
  * - Porta fechada COM acesso recente: mantém LED verde
- * - Porta fechada: LEDs desligam
+ * - Alarme ativo: continua apitando até cartão autorizado desativar
  */
 void handleDoorAlerts() {
   // Se acesso foi concedido com porta fechada, manter LED verde aceso
@@ -313,27 +322,8 @@ void handleDoorAlerts() {
     return;
   }
 
-  // Se porta não está aberta, desligar todos LEDs e buzzer
-  if (!doorOpen) {
-    Serial.println(F("DEBUG handleDoorAlerts - Porta fechada, desligando LEDs"));
-    redBlinkMillis = millis();  // Resetar timer
-    digitalWrite(ACTUATOR_PIN, LOW);
-    digitalWrite(DENIED_LED, LOW);
-    digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
-    digitalWrite(BUZZER_PIN, LOW);      // Desligar buzzer
-    return;
-  }
-
-  // PORTA ESTÁ ABERTA
-  if (accessAuthorized || personEnteredAfterAccess) {
-    // Acesso foi autorizado - manter LED verde aceso
-    redBlinkMillis = millis();  // Resetar timer
-    digitalWrite(ACTUATOR_PIN, HIGH);   // LED verde
-    digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
-    digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
-    digitalWrite(BUZZER_PIN, LOW);      // Desligar buzzer
-  } else {
-    // Acesso NÃO autorizado - LED verde e amarelo alternam (efeito polícia com 2 piscadas)
+  // ALARME ATIVO: Continua apitando mesmo se porta fechar!
+  if (alarmActive) {
     unsigned long currentMillis = millis();
 
     // Inicializar timer se for a primeira vez
@@ -343,16 +333,7 @@ void handleDoorAlerts() {
 
     unsigned long elapsedTime = currentMillis - redBlinkMillis;
 
-    // Calcular em qual fase estamos
-    // Fase 0: Verde ON (0-100ms)
-    // Fase 1: Verde OFF (100-200ms)
-    // Fase 2: Verde ON (200-300ms)
-    // Fase 3: Verde OFF (300-400ms)
-    // Fase 4: Amarelo ON (400-500ms)
-    // Fase 5: Amarelo OFF (500-600ms)
-    // Fase 6: Amarelo ON (600-700ms)
-    // Fase 7: Amarelo OFF (700-800ms) -> depois volta para fase 0
-
+    // Calcular em qual fase estamos (efeito polícia)
     int totalCycleTime = BLINK_ON_TIME * 8;  // 800ms total
     int phase = (elapsedTime / BLINK_ON_TIME) % 8;
 
@@ -390,7 +371,69 @@ void handleDoorAlerts() {
         digitalWrite(BUZZER_PIN, LOW);
       }
     }
+    return;
   }
+
+  // Se porta não está aberta e alarme NÃO está ativo, desligar todos LEDs e buzzer
+  if (!doorOpen) {
+    Serial.println(F("DEBUG handleDoorAlerts - Porta fechada, desligando LEDs"));
+    redBlinkMillis = millis();  // Resetar timer
+    digitalWrite(ACTUATOR_PIN, LOW);
+    digitalWrite(DENIED_LED, LOW);
+    digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
+    digitalWrite(BUZZER_PIN, LOW);      // Desligar buzzer
+    return;
+  }
+
+  // PORTA ESTÁ ABERTA
+  if (accessAuthorized || personEnteredAfterAccess) {
+    // Acesso foi autorizado - manter LED verde aceso
+    redBlinkMillis = millis();  // Resetar timer
+    digitalWrite(ACTUATOR_PIN, HIGH);   // LED verde
+    digitalWrite(DENIED_LED, LOW);      // Desligar LED vermelho
+    digitalWrite(INDICATION_LED, LOW);  // Desligar LED amarelo
+    digitalWrite(BUZZER_PIN, LOW);      // Desligar buzzer
+  } else {
+    // Acesso NÃO autorizado - ativar alarme
+    if (!alarmActive) {
+      Serial.println(F("🚨 ALARME ATIVADO! Porta aberta sem autorização!"));
+      alarmActive = true;
+
+      // Enviar alerta ao Telegram
+      sendTelegramAlert("🚨 ALERTA: Porta aberta sem autorização! Alarme ativado.");
+    }
+  }
+}
+
+/**
+ * Verifica se houve duplo clique no botão
+ * Retorna true se detectou duplo clique
+ */
+bool checkDoubleClick() {
+  bool currentButtonState = digitalRead(BTN_PIN);
+  unsigned long currentTime = millis();
+
+  // Detectar mudança de estado do botão (borda de descida: HIGH -> LOW)
+  if (lastButtonState == HIGH && currentButtonState == LOW) {
+    // Botão foi pressionado
+    clickCount++;
+    lastButtonReleaseTime = currentTime;
+
+    // Se temos 2 cliques dentro do timeout
+    if (clickCount == 2) {
+      clickCount = 0;  // Resetar contador
+      lastButtonState = currentButtonState;
+      return true;  // Duplo clique detectado!
+    }
+  }
+
+  // Resetar contador se timeout expirou
+  if (clickCount > 0 && (currentTime - lastButtonReleaseTime > DOUBLE_CLICK_TIMEOUT)) {
+    clickCount = 0;
+  }
+
+  lastButtonState = currentButtonState;
+  return false;
 }
 
 /**
@@ -477,6 +520,51 @@ void checkUltrasonicSensor() {
 // =================================================================
 // 6. COMUNICAÇÃO COM SERVIDOR NODE.JS - TELEGRAM
 // =================================================================
+
+/**
+ * Envia alerta de acesso não autorizado ao Telegram
+ * Usa tentativa única para não travar o sistema
+ */
+void sendTelegramAlert(String message) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("WiFi desconectado. Alerta não enviado."));
+    return;
+  }
+
+  HTTPClient http;
+
+  StaticJsonDocument<256> jsonDoc;
+  jsonDoc["message"] = message;
+  jsonDoc["type"] = "alarm";
+
+  String jsonString;
+  serializeJson(jsonDoc, jsonString);
+
+  String url = String(serverUrl) + "/api/esp32/telegram/alert";
+
+  Serial.println("\n--- Enviando alerta ao Telegram ---");
+  Serial.println("Mensagem: " + message);
+
+  // Timeout mais curto para não travar o sistema
+  http.setConnectTimeout(2000);  // 2 segundos
+  http.setTimeout(3000);          // 3 segundos
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+
+  int httpResponseCode = http.POST(jsonString);
+
+  if (httpResponseCode > 0 && httpResponseCode < 400) {
+    Serial.println("✓ Alerta enviado ao Telegram!");
+  } else if (httpResponseCode == -1) {
+    Serial.println("⚠ Servidor não respondeu. Alerta não enviado.");
+  } else {
+    Serial.print("✗ Erro ao enviar alerta (HTTP ");
+    Serial.print(httpResponseCode);
+    Serial.println(")");
+  }
+
+  http.end();
+}
 
 /**
  * Envia requisição de confirmação Telegram ao servidor
@@ -893,6 +981,38 @@ void loop() {
   // Controlar alertas de LED quando porta está aberta
   handleDoorAlerts();
 
+  // Verificar duplo clique para desativar alarme
+  if (checkDoubleClick()) {
+    if (alarmActive) {
+      Serial.println(F("✅ ALARME DESATIVADO! Duplo clique detectado."));
+      alarmActive = false;
+
+      // Desligar buzzer e LEDs de alarme imediatamente
+      digitalWrite(BUZZER_PIN, LOW);
+      digitalWrite(DENIED_LED, LOW);
+      digitalWrite(INDICATION_LED, LOW);
+
+      // LED verde de confirmação
+      digitalWrite(ACTUATOR_PIN, HIGH);
+      delay(500);
+      digitalWrite(ACTUATOR_PIN, LOW);
+      delay(200);
+      digitalWrite(ACTUATOR_PIN, HIGH);
+      delay(500);
+      digitalWrite(ACTUATOR_PIN, LOW);
+
+      // Marcar que pessoa entrou (para manter LED verde aceso até porta fechar)
+      accessAuthorized = true;
+      personEnteredAfterAccess = true;
+
+      sendAccessToServer("BUTTON", "alarme_desativado_botao", "Sistema");
+
+      Serial.println(F("LED verde ficará aceso até porta fechar."));
+    } else {
+      Serial.println(F("Duplo clique detectado, mas alarme não está ativo."));
+    }
+  }
+
   // Verificar resposta do Telegram se estiver aguardando
   if (waitingForTelegramConfirmation) {
     checkTelegramResponse();
@@ -900,22 +1020,27 @@ void loop() {
     return;
   }
 
-  // DETECÇÃO DE PRESSÃO LONGA DO BOTÃO
+  // DETECÇÃO DE PRESSÃO LONGA DO BOTÃO (apenas se não estiver em modo de duplo clique)
   if (digitalRead(BTN_PIN) == LOW) {
-    if (buttonPressStartTime == 0) {
+    // Só começar a contar tempo de pressão longa se não há cliques pendentes
+    if (buttonPressStartTime == 0 && clickCount == 0) {
       buttonPressStartTime = millis();
       Serial.println(F("Botao pressionado. Segurando por 10s..."));
     }
 
-    if (millis() - buttonPressStartTime >= requiredPressTime && !isEnrollmentMode) {
+    if (buttonPressStartTime != 0 && millis() - buttonPressStartTime >= requiredPressTime && !isEnrollmentMode) {
       isEnrollmentMode = true;
       Serial.println(F(">>> MODO DE CADASTRO ATIVADO! <<<"));
       Serial.println(F("Aproxime o novo cartao."));
       buttonPressStartTime = 0;
+      clickCount = 0;  // Limpar contador de cliques
     }
   } else {
     if (buttonPressStartTime != 0 && !isEnrollmentMode) {
-      Serial.println(F("Botao solto. Tempo insuficiente para cadastro."));
+      // Só mostrar mensagem se não foi um clique rápido
+      if (millis() - buttonPressStartTime > 1000) {
+        Serial.println(F("Botao solto. Tempo insuficiente para cadastro."));
+      }
     }
     buttonPressStartTime = 0;
   }
@@ -976,6 +1101,37 @@ void loop() {
     // Desligar LED vermelho após autenticação bem-sucedida (verde continua)
     digitalWrite(DENIED_LED, LOW);
     Serial.println(F(">>> ACESSO PERMITIDO! <<<"));
+
+    // Se alarme estava ativo, desativar
+    if (alarmActive) {
+      Serial.println(F("✅ ALARME DESATIVADO! Cartão autorizado detectado."));
+      alarmActive = false;
+
+      // Desligar buzzer e LEDs de alarme imediatamente
+      digitalWrite(BUZZER_PIN, LOW);
+      digitalWrite(DENIED_LED, LOW);
+      digitalWrite(INDICATION_LED, LOW);
+
+      // Ativar LED verde e relé
+      digitalWrite(ACTUATOR_PIN, HIGH);
+      digitalWrite(RELAY_PIN, HIGH);
+      delay(100);
+      digitalWrite(RELAY_PIN, LOW);
+
+      // Marcar que pessoa entrou (para manter LED verde aceso até porta fechar)
+      accessAuthorized = true;
+      personEnteredAfterAccess = true;
+
+      sendAccessToServer(cardUID, "alarme_desativado", "Usuario");
+
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
+
+      // Continuar no loop - LED verde fica aceso até porta fechar
+      delay(1000);
+      return;
+    }
+
     sendAccessToServer(cardUID, "acesso_concedido", "Usuario");
 
     // Se porta está fechada, ativar sistema de timeout de 10 segundos
