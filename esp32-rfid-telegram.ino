@@ -396,11 +396,11 @@ void handleDoorAlerts() {
   } else {
     // Acesso NÃO autorizado - ativar alarme
     if (!alarmActive) {
-      Serial.println(F("🚨 ALARME ATIVADO! Porta aberta sem autorização!"));
+      Serial.println(F("🚨 ALARME ATIVADO! Gaveta aberta sem autorização!"));
       alarmActive = true;
 
       // Enviar alerta ao Telegram
-      sendTelegramAlert("🚨 ALERTA: Porta aberta sem autorização! Alarme ativado.");
+      sendTelegramAlert("🚨 ALERTA: Gaveta aberta sem autorização! Alarme ativado.");
     }
   }
 }
