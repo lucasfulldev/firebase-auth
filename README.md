@@ -291,6 +291,11 @@ A variável de ambiente `FIREBASE_PRIVATE_KEY` precisa incluir as quebras de lin
 - [ ] Banco de dados PostgreSQL para histórico
 - [ ] WebSocket para updates em tempo real
 
+
+## Protótipo em Hardware 
+
+[Controle de acesso IoT utilizando leitor RFID](https://youtu.be/KSf-CPLFU2M)
+
 ## 📝 Licença
 
 MIT
